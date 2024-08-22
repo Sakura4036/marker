@@ -25,7 +25,7 @@ import concurrent.futures
 from marker.convert import convert_single_pdf  # Import function to parse PDF
 from marker.logger import configure_logging  # Import logging configuration
 from marker.models import load_all_models  # Import function to load models
-from marker.output import save_markdown, get_markdown_filepath, markdown_exists
+from marker.output import save_markdown, get_markdown_filepath
 from marker.settings import settings  # Import settings
 from convert import process_single_pdf  # Import function to parse PDF
 from contextlib import asynccontextmanager
@@ -90,18 +90,6 @@ app.add_middleware(
 )
 
 
-def convert_single_file(filepath: str = None,
-                        save_path: str = None,
-                        file: UploadFile = None,
-                        max_pages: int = None,
-                        start_page: int = None,
-                        metadata: Optional[dict] = None,
-                        langs: Optional[list[str]] = None,
-                        batch_multiplier: int = 1,
-                        ocr_all_pages: bool = False):
-    pass
-
-
 # Root endpoint to check server status
 @app.get("/")
 def server():
@@ -151,7 +139,7 @@ async def convert_file_to_markdown(
         file_content = await file.read()
     if output_folder:
         markdown_filepath = get_markdown_filepath(output_folder, filename)
-        if markdown_exists(markdown_filepath):
+        if os.path.exists(markdown_filepath):
             subfolder_path = os.path.dirname(markdown_filepath)
             return {
                 "filename": filename,
