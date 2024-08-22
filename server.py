@@ -9,11 +9,11 @@
 
 import os
 
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1" # For some reason, transformers decided to use .isin for a simple op, which is not supported on MPS
-os.environ["IN_STREAMLIT"] = "true" # Avoid multiprocessing inside surya
-os.environ["PDFTEXT_CPU_WORKERS"] = "1" # Avoid multiprocessing inside pdftext
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # For some reason, transformers decided to use .isin for a simple op, which is not supported on MPS
+os.environ["IN_STREAMLIT"] = "true"  # Avoid multiprocessing inside surya
+os.environ["PDFTEXT_CPU_WORKERS"] = "1"  # Avoid multiprocessing inside pdftext
 
-import pypdfium2 # Needs to be at the top to avoid warnings
+import pypdfium2  # Needs to be at the top to avoid warnings
 import asyncio
 import argparse
 import time
@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 # Global variable to hold model list
 model_list = None
-
 
 
 # Event that runs on startup to load all models
@@ -117,15 +116,16 @@ def server():
 
 # Endpoint to convert a single PDF to markdown
 @app.post("/convert")
-async def convert_file_to_markdown(filepath: str = None,
-                                   output_folder: str = None,
-                                   file: UploadFile = None,
-                                   max_pages: int = None,
-                                   start_page: int = None,
-                                   metadata: Optional[dict] = None,
-                                   langs: Optional[list[str]] = None,
-                                   batch_multiplier: int = 1,
-                                   ocr_all_pages: bool = False):
+async def convert_file_to_markdown(
+        file: UploadFile = None,
+        filepath: str = None,
+        output_folder: str = None,
+        max_pages: int = None,
+        start_page: int = None,
+        metadata: Optional[dict] = None,
+        langs: Optional[list[str]] = None,
+        batch_multiplier: int = 1,
+        ocr_all_pages: bool = False):
     """
     Endpoint to convert a single PDF to markdown.
 
@@ -198,11 +198,12 @@ async def convert_file_to_markdown(filepath: str = None,
 
 # Endpoint to convert multiple PDFs to markdown
 @app.post("/batch_convert")
-async def convert_files_to_markdown(filepaths: list[str] = None,
-                                    files: List[UploadFile] = None,
-                                    output_folder: str = None,
-                                    workers: int = 4,
-                                    ):
+async def convert_files_to_markdown(
+        files: List[UploadFile] = None,
+        filepaths: list[str] = None,
+        output_folder: str = None,
+        workers: int = 4,
+):
     """
     Endpoint to convert multiple PDFs to markdown.
 
@@ -224,6 +225,7 @@ async def convert_files_to_markdown(filepaths: list[str] = None,
         filenames = [file.filename for file in files]
         logger.debug(f"Received files: {filenames}")
         filepaths = [None for _ in range(len(files))]
+
     # task_args = [(f, output_folder, None, min_length) for f in file_contents]
     # total_processes = min(len(task_args), workers)
     # with mp.Pool(processes=total_processes, initializer=worker_init, initargs=(model_list,)) as pool:
@@ -235,7 +237,7 @@ async def convert_files_to_markdown(filepaths: list[str] = None,
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             coroutines = [
-                loop.run_in_executor(pool, convert_file_to_markdown, filepaths, output_folder, file)
+                loop.run_in_executor(pool, convert_file_to_markdown, file, filepath, output_folder)
                 for filepath, file in zip(filepaths, files)
             ]
             return await asyncio.gather(*coroutines)
