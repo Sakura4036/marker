@@ -25,7 +25,7 @@ import concurrent.futures
 from marker.convert import convert_single_pdf  # Import function to parse PDF
 from marker.logger import configure_logging  # Import logging configuration
 from marker.models import load_all_models  # Import function to load models
-from marker.output import save_markdown_text, save_markdown, get_markdown_filepath
+from marker.output import save_markdown, get_markdown_filepath, markdown_exists
 from marker.settings import settings  # Import settings
 from convert import process_single_pdf  # Import function to parse PDF
 from contextlib import asynccontextmanager
@@ -149,15 +149,33 @@ async def convert_file_to_markdown(filepath: str = None,
         logger.debug(f"Received file: {file.filename}")
         filename = file.filename
         file_content = await file.read()
+    if output_folder:
+        markdown_filepath = get_markdown_filepath(output_folder, filename)
+        if markdown_exists(markdown_filepath):
+            subfolder_path = os.path.dirname(markdown_filepath)
+            return {
+                "filename": filename,
+                "markdown": markdown_filepath,
+                "output_folder": subfolder_path,
+                "status": "ok",
+                "time": 0
+            }
+
     entry_time = time.time()
     logger.debug(f"Entry time for {filename}: {entry_time}")
-    markdown_text, image_data, metadata = convert_single_pdf(file_content, model_list,
-                                                             max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages)
+    try:
+        markdown_text, image_data, metadata = convert_single_pdf(file_content, model_list,
+                                                                 max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. \n{e}")
     completion_time = time.time()
     logger.debug(f"Model processes complete time for {filename}: {completion_time}")
     time_difference = completion_time - entry_time
     logger.debug(f"Time taken to process {filename}: {time_difference}")
     if output_folder:
+        if len(markdown_text.strip()) < 0:
+            raise HTTPException(status_code=400, detail=f"Empty file: {filename}")
+
         subfolder_path = save_markdown(output_folder, filename, markdown_text, image_data, metadata)
         markdown_filepath = get_markdown_filepath(output_folder, filename)
         return {
