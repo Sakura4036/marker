@@ -104,7 +104,7 @@ def server():
 
 # Endpoint to convert a single PDF to markdown
 @app.post("/convert")
-def convert_file_to_markdown(
+async def convert_file_to_markdown(
         file: UploadFile = None,
         filepath: str = None,
         output_folder: str = None,
@@ -136,7 +136,7 @@ def convert_file_to_markdown(
     else:
         print(f"Received file: {file.filename}")
         filename = file.filename
-        file_content = file.read()
+        file_content = await file.read()
     if output_folder:
         markdown_filepath = get_markdown_filepath(output_folder, filename)
         if os.path.exists(markdown_filepath):
@@ -194,7 +194,7 @@ def convert_file_to_markdown(
 
 # Endpoint to convert multiple PDFs to markdown
 @app.post("/batch_convert")
-def convert_files_to_markdown(
+async def convert_files_to_markdown(
         files: List[UploadFile] = None,
         filepaths: list[str] = None,
         output_folder: str = None,
@@ -226,28 +226,19 @@ def convert_files_to_markdown(
     time.sleep(10)
     print("filepaths: ", filepaths)
 
-    # task_args = [(f, output_folder, None, min_length) for f in file_contents]
-    # total_processes = min(len(task_args), workers)
-    # with mp.Pool(processes=total_processes, initializer=worker_init, initargs=(model_list,)) as pool:
-    #     list(tqdm(pool.imap(process_single_pdf, task_args), total=len(task_args), desc="Processing PDFs", unit="pdf"))
-    #
-    #     pool._worker_handler.terminate = worker_exit
+    async def process_files(files, filepaths, output_folder, workers):
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            coroutines = [
+                loop.run_in_executor(pool, convert_file_to_markdown, await file.read(), filepath, output_folder)
+                for file, filepath in zip(files,filepaths)
+            ]
+            return await asyncio.gather(*coroutines)
 
     entry_time = time.time()
     print(f"Entry time : {entry_time}")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        # Use the pool to execute convert_file_to_markdown in parallel
-        futures = [
-            pool.submit(convert_file_to_markdown, file, filepath, output_folder)
-            for filepath, file in zip(filepaths, files)
-        ]
-
-        # Wait for all futures to complete and gather the results
-        responses = [future.result() for future in concurrent.futures.as_completed(futures)]
-
-        # Debugging: Print results to check their structure before returning
-        print("Processed Results: ", responses)
+    responses = await process_files(files, filepaths, output_folder, workers)
 
     completion_time = time.time()
     print(f"Model processes complete time : {completion_time}")
