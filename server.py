@@ -221,7 +221,9 @@ async def convert_files_to_markdown(
     #
     #     pool._worker_handler.terminate = worker_exit
 
-    async def process_files(filepaths, files):
+    async def process_files(files, filepaths, output_folder):
+        if not files or not filepaths:
+            return []
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             coroutines = [
@@ -233,7 +235,7 @@ async def convert_files_to_markdown(
     entry_time = time.time()
     logger.debug(f"Entry time : {entry_time}")
 
-    responses = await process_files(filepaths, files)
+    responses = await process_files(files, filepaths, output_folder)
 
     completion_time = time.time()
     logger.debug(f"Model processes complete time : {completion_time}")
