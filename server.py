@@ -136,7 +136,7 @@ def convert_file_to_markdown(
     else:
         print(f"Received file: {file.filename}")
         filename = file.filename
-        file_content = await file.read()
+        file_content = file.read()
     if output_folder:
         markdown_filepath = get_markdown_filepath(output_folder, filename)
         if os.path.exists(markdown_filepath):
