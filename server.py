@@ -104,7 +104,7 @@ def server():
 
 # Endpoint to convert a single PDF to markdown
 @app.post("/convert")
-async def convert_file_to_markdown(
+def convert_file_to_markdown(
         file: UploadFile = None,
         filepath: str = None,
         output_folder: str = None,
@@ -175,7 +175,9 @@ async def convert_file_to_markdown(
         }
     for i, (filename, image) in enumerate(image_data.items()):
         # Save image as PNG
-        image_bytes = image.save(io.BytesIO(), format='PNG')
+        image_io = io.BytesIO()
+        image.save(image_io, format='PNG')
+        image_bytes = image_io.getvalue()
         # Convert image to base64
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         image_data[f'{filename}'] = image_base64
@@ -192,7 +194,7 @@ async def convert_file_to_markdown(
 
 # Endpoint to convert multiple PDFs to markdown
 @app.post("/batch_convert")
-async def convert_files_to_markdown(
+def convert_files_to_markdown(
         files: List[UploadFile] = None,
         filepaths: list[str] = None,
         output_folder: str = None,
