@@ -201,8 +201,7 @@ async def convert_files_to_markdown(
     Returns:
     list: The responses from processing each PDF file.
     """
-    print(f"Received {len(files)} files for batch conversion")
-    time.sleep(10)
+
     if not filepaths and not files:
         raise HTTPException(status_code=400, detail="No files provided")
     if not files:
@@ -212,7 +211,12 @@ async def convert_files_to_markdown(
     else:
         filenames = [file.filename for file in files]
         print(f"Received files: {filenames}")
-        filepaths = [None for _ in range(len(files))]
+        filepaths = ['' for _ in range(len(files))]
+
+    assert len(files) == len(filepaths), "Number of files and filepaths do not match"
+    print(f"Received {len(files)} files for batch conversion")
+    time.sleep(10)
+    print("filepaths: ", filepaths)
 
     # task_args = [(f, output_folder, None, min_length) for f in file_contents]
     # total_processes = min(len(task_args), workers)
@@ -230,6 +234,7 @@ async def convert_files_to_markdown(
                 loop.run_in_executor(pool, convert_file_to_markdown, file, filepath, output_folder)
                 for filepath, file in zip(filepaths, files)
             ]
+            print("coroutines: ", len(coroutines))
             return await asyncio.gather(*coroutines)
 
     entry_time = time.time()
