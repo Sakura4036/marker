@@ -31,7 +31,7 @@ from convert import process_single_pdf  # Import function to parse PDF
 from contextlib import asynccontextmanager
 # import logging
 import torch.multiprocessing as mp
-from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Initialize logging
 # configure_logging()
@@ -226,6 +226,13 @@ async def convert_files_to_markdown(
     time.sleep(10)
     print("filepaths: ", filepaths)
 
+    async def process_file(file: UploadFile, filepath: str, output_folder: str):
+        return await convert_file_to_markdown(
+            file=file,
+            filepath=filepath,
+            output_folder=output_folder,
+        )
+
     async def process_files(files, filepaths, output_folder, workers):
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -238,14 +245,119 @@ async def convert_files_to_markdown(
     entry_time = time.time()
     print(f"Entry time : {entry_time}")
 
-    responses = await process_files(files, filepaths, output_folder, workers)
+    # responses = await process_files(files, filepaths, output_folder, workers)
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_file = {executor.submit(process_file, file): file for file in files}
+        for future in concurrent.futures.as_completed(future_to_file):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "filename": future_to_file[future].filename,
+                    "status": "error",
+                    "error": str(e)
+                })
 
     completion_time = time.time()
     print(f"Model processes complete time : {completion_time}")
     time_difference = completion_time - entry_time
     print(f"Time taken: {time_difference}")
 
-    return responses
+    return results
+
+
+@app.post("/batch_convert2")
+async def batch_convert_files_to_markdown2(
+        files: List[UploadFile],
+        filepaths: list[str] = None,
+        output_folder: str = None,
+        max_pages: int = None,
+        start_page: int = None,
+        metadata: Optional[dict] = None,
+        langs: Optional[list[str]] = None,
+        batch_multiplier: int = 1,
+        ocr_all_pages: bool = False,
+        max_workers: int = 4):
+    """
+    Endpoint to convert multiple PDFs to markdown using multithreading.
+
+    Args:
+    files (List[UploadFile]): List of uploaded PDF files.
+    output_folder (str): The folder to save markdown files.
+    max_pages (int): Maximum number of pages to process.
+    start_page (int): Page number to start processing.
+    metadata (dict): Optional metadata for processing.
+    langs (list[str]): Optional list of languages.
+    batch_multiplier (int): Batch processing multiplier.
+    ocr_all_pages (bool): Whether to OCR all pages or not.
+    max_workers (int): Maximum number of threads to use for parallel processing.
+
+    Returns:
+    dict: A response containing the status and details of each processed file.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    def process_file(file: UploadFile, model_list, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages):
+        try:
+            filename = file.filename
+            print(f"Processing file: {filename}")
+            file_content = await file.read()
+
+            entry_time = time.time()
+            markdown_text, image_data, metadata = convert_single_pdf(file_content, model_list,
+                                                                     max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages)
+            completion_time = time.time()
+            time_difference = completion_time - entry_time
+            print(f"Time taken to process {filename}: {time_difference}")
+
+            if output_folder:
+                if len(markdown_text.strip()) <= 0:
+                    raise HTTPException(status_code=400, detail=f"Empty file: {filename}")
+
+                subfolder_path = save_markdown(output_folder, filename, markdown_text, image_data, metadata)
+                markdown_filepath = get_markdown_filepath(output_folder, filename)
+                return {
+                    "filename": filename,
+                    "markdown": markdown_filepath,
+                    "output_folder": subfolder_path,
+                    "status": "ok",
+                    "time": time_difference
+                }
+
+            for i, (img_filename, image) in enumerate(image_data.items()):
+                image_io = io.BytesIO()
+                image.save(image_io, format='PNG')
+                image_bytes = image_io.getvalue()
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                image_data[f'{img_filename}'] = image_base64
+
+            return {
+                "filename": filename,
+                "markdown": markdown_text,
+                "metadata": metadata,
+                "images": image_data,
+                "status": "ok",
+                "time": time_difference
+            }
+
+        except Exception as e:
+            return {
+                "filename": file.filename,
+                "status": "error",
+                "error": str(e)
+            }
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_file = {executor.submit(process_file, file, model_list, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages): file for file in files}
+        for future in as_completed(future_to_file):
+            result = future.result()
+            results.append(result)
+
+    return {"results": results}
 
 
 # Main function to run the server
