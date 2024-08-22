@@ -248,7 +248,7 @@ async def convert_files_to_markdown(
     # responses = await process_files(files, filepaths, output_folder, workers)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_file = {executor.submit(process_file, file): file for file in files}
+        future_to_file = {executor.submit(process_file, file, filepath, output_folder): file for file, filepath in zip(files, filepaths)}
         for future in concurrent.futures.as_completed(future_to_file):
             try:
                 result = future.result()
