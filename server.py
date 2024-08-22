@@ -23,19 +23,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import concurrent.futures
 from marker.convert import convert_single_pdf  # Import function to parse PDF
-from marker.logger import configure_logging  # Import logging configuration
+# from marker.logger import configure_logging  # Import logging configuration
 from marker.models import load_all_models  # Import function to load models
 from marker.output import save_markdown, get_markdown_filepath
 from marker.settings import settings  # Import settings
 from convert import process_single_pdf  # Import function to parse PDF
 from contextlib import asynccontextmanager
-import logging
+# import logging
 import torch.multiprocessing as mp
 from tqdm import tqdm
 
 # Initialize logging
-configure_logging()
-logger = logging.getLogger(__name__)
+# configure_logging()
+# logger = logging.getLogger(__name__)
 
 # Global variable to hold model list
 model_list = None
@@ -131,10 +131,10 @@ async def convert_file_to_markdown(
         raise HTTPException(status_code=400, detail="No file provided")
     if not file:
         filename = os.path.basename(filepath)
-        logger.debug(f"Received file: {filepath}")
+        print(f"Received file: {filepath}")
         file_content = filepath
     else:
-        logger.debug(f"Received file: {file.filename}")
+        print(f"Received file: {file.filename}")
         filename = file.filename
         file_content = await file.read()
     if output_folder:
@@ -150,16 +150,16 @@ async def convert_file_to_markdown(
             }
 
     entry_time = time.time()
-    logger.debug(f"Entry time for {filename}: {entry_time}")
+    print(f"Entry time for {filename}: {entry_time}")
     try:
         markdown_text, image_data, metadata = convert_single_pdf(file_content, model_list,
                                                                  max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. \n{e}")
     completion_time = time.time()
-    logger.debug(f"Model processes complete time for {filename}: {completion_time}")
+    print(f"Model processes complete time for {filename}: {completion_time}")
     time_difference = completion_time - entry_time
-    logger.debug(f"Time taken to process {filename}: {time_difference}")
+    print(f"Time taken to process {filename}: {time_difference}")
     if output_folder:
         if len(markdown_text.strip()) < 0:
             raise HTTPException(status_code=400, detail=f"Empty file: {filename}")
@@ -201,17 +201,17 @@ async def convert_files_to_markdown(
     Returns:
     list: The responses from processing each PDF file.
     """
-    logger.info(f"Received {len(files)} files for batch conversion")
-
+    print(f"Received {len(files)} files for batch conversion")
+    time.sleep(10)
     if not filepaths and not files:
         raise HTTPException(status_code=400, detail="No files provided")
     if not files:
         filenames = [os.path.basename(filepath) for filepath in filepaths]
-        logger.debug(f"Received files: {filenames}")
+        print(f"Received files: {filenames}")
         files = [None for _ in range(len(filepaths))]
     else:
         filenames = [file.filename for file in files]
-        logger.debug(f"Received files: {filenames}")
+        print(f"Received files: {filenames}")
         filepaths = [None for _ in range(len(files))]
 
     # task_args = [(f, output_folder, None, min_length) for f in file_contents]
@@ -233,14 +233,14 @@ async def convert_files_to_markdown(
             return await asyncio.gather(*coroutines)
 
     entry_time = time.time()
-    logger.debug(f"Entry time : {entry_time}")
+    print(f"Entry time : {entry_time}")
 
     responses = await process_files(files, filepaths, output_folder)
 
     completion_time = time.time()
-    logger.debug(f"Model processes complete time : {completion_time}")
+    print(f"Model processes complete time : {completion_time}")
     time_difference = completion_time - entry_time
-    logger.debug(f"Time taken: {time_difference}")
+    print(f"Time taken: {time_difference}")
 
     return responses
 
@@ -250,10 +250,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run the marker-api server.")
     parser.add_argument("--host", default="0.0.0.0", help="Host IP address")
     parser.add_argument("--port", type=int, default=8000, help="Port number")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    # parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
+    # if args.debug:
+    #     logger.setLevel(logging.DEBUG)
 
     import uvicorn
     uvicorn.run("server:app", host=args.host, port=args.port)
