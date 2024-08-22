@@ -7,6 +7,7 @@
 @License  : (C)Copyright 2018-2025
 """
 import io
+import json
 import os
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # For some reason, transformers decided to use .isin for a simple op, which is not supported on MPS
@@ -27,18 +28,19 @@ from marker.convert import convert_single_pdf  # Import function to parse PDF
 from marker.models import load_all_models  # Import function to load models
 from marker.output import save_markdown, get_markdown_filepath
 from marker.settings import settings  # Import settings
-from convert import process_single_pdf  # Import function to parse PDF
 from contextlib import asynccontextmanager
 # import logging
 import torch.multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import tempfile
 
 # Initialize logging
 # configure_logging()
 # logger = logging.getLogger(__name__)
 
 # Global variable to hold model list
-model_list = None
+MODEL_LIST = None
+OUTPUT_FOLDER = 'output'
 
 
 # Event that runs on startup to load all models
@@ -49,15 +51,15 @@ async def lifespan(app: FastAPI):
     except RuntimeError:
         raise RuntimeError("Set start method to spawn twice. This may be a temporary issue with the script. Please try running it again.")
 
-    global model_list
+    global MODEL_LIST
     if settings.TORCH_DEVICE == "mps" or settings.TORCH_DEVICE_MODEL == "mps":
         print(
             "Cannot use MPS with torch multiprocessing share_memory. This will make things less memory efficient. If you want to share memory, you have to use CUDA or CPU.  Set the TORCH_DEVICE environment variable to change the device.")
 
-        model_list = None
+        MODEL_LIST = None
     else:
-        model_list = load_all_models()
-        for model in model_list:
+        MODEL_LIST = load_all_models()
+        for model in MODEL_LIST:
             if model is None:
                 continue
             model.share_memory()
@@ -90,6 +92,58 @@ app.add_middleware(
 )
 
 
+def convert_single_file(filepath: str, output_folder: str = OUTPUT_FOLDER, **kwargs):
+    if not filepath:
+        raise HTTPException(status_code=400, detail="No file provided")
+    filename = os.path.basename(filepath)
+    markdown_filepath = get_markdown_filepath(output_folder, filename)
+    if os.path.exists(markdown_filepath):
+        markdown_text = open(markdown_filepath, "r", encoding='utf-8').read()
+        out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
+        if os.path.exists(out_meta_filepath):
+            metadata = json.load(open(out_meta_filepath, "r"))
+        else:
+            metadata = {}
+
+        return {
+            "filename": filename,
+            "markdown": markdown_text,
+            "markdown_filepath": markdown_filepath,
+            "metadata": metadata,
+            "metadata_filepath": out_meta_filepath,
+            "status": "ok",
+            "time": 0
+        }
+
+    entry_time = time.time()
+    print(f"Entry time for {filename}: {entry_time}")
+    try:
+        markdown_text, image_data, metadata = convert_single_pdf(filepath, MODEL_LIST, **kwargs)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. \n{e}")
+    completion_time = time.time()
+    print(f"Model processes complete time for {filename}: {completion_time}")
+    time_difference = completion_time - entry_time
+    print(f"Time taken to process {filename}: {time_difference}")
+
+    if len(markdown_text.strip()) < 0:
+        raise HTTPException(status_code=400, detail=f"Empty file: {filename}")
+
+    subfolder_path = save_markdown(output_folder, filename, markdown_text, image_data, metadata)
+    markdown_filepath = get_markdown_filepath(output_folder, filename)
+    out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
+
+    return {
+        "filename": filename,
+        "markdown": markdown_text,
+        "markdown_filepath": markdown_filepath,
+        "metadata": metadata,
+        "metadata_filepath": out_meta_filepath,
+        "status": "ok",
+        "time": 0
+    }
+
+
 # Root endpoint to check server status
 @app.get("/")
 def server():
@@ -104,7 +158,7 @@ def server():
 
 # Endpoint to convert a single PDF to markdown
 @app.post("/convert")
-async def convert_file_to_markdown(
+def convert_file_to_markdown(
         file: UploadFile = None,
         filepath: str = None,
         output_folder: str = None,
@@ -118,78 +172,30 @@ async def convert_file_to_markdown(
     Endpoint to convert a single PDF to markdown.
 
     Args:
-    filepath (str): The path to the PDF file.
-    save_type (str): "text" means only save the Markdown text to a file, "all" means save as all markdown, None or others string means do not save.
-    save_path (str): The path to save the file.
     file (UploadFile): The uploaded PDF file.
+    filepath (str): The path to the PDF file.
+    output_folder (str): The folder to save the markdown file and images.
     **kwargs: Additional keyword arguments.
 
     Returns:
     dict: The response from processing the PDF file.
     """
-    if not filepath and not file:
-        raise HTTPException(status_code=400, detail="No file provided")
-    if not file:
-        filename = os.path.basename(filepath)
-        print(f"Received file: {filepath}")
-        file_content = filepath
-    else:
-        print(f"Received file: {file.filename}")
-        filename = file.filename
-        file_content = await file.read()
-    if output_folder:
-        markdown_filepath = get_markdown_filepath(output_folder, filename)
-        if os.path.exists(markdown_filepath):
-            subfolder_path = os.path.dirname(markdown_filepath)
-            return {
-                "filename": filename,
-                "markdown": markdown_filepath,
-                "output_folder": subfolder_path,
-                "status": "ok",
-                "time": 0
-            }
-
-    entry_time = time.time()
-    print(f"Entry time for {filename}: {entry_time}")
-    try:
-        markdown_text, image_data, metadata = convert_single_pdf(file_content, model_list,
-                                                                 max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. \n{e}")
-    completion_time = time.time()
-    print(f"Model processes complete time for {filename}: {completion_time}")
-    time_difference = completion_time - entry_time
-    print(f"Time taken to process {filename}: {time_difference}")
-    if output_folder:
-        if len(markdown_text.strip()) < 0:
-            raise HTTPException(status_code=400, detail=f"Empty file: {filename}")
-
-        subfolder_path = save_markdown(output_folder, filename, markdown_text, image_data, metadata)
-        markdown_filepath = get_markdown_filepath(output_folder, filename)
-        return {
-            "filename": filename,
-            "markdown": markdown_filepath,
-            "output_folder": subfolder_path,
-            "status": "ok",
-            "time": time_difference
-        }
-    for i, (filename, image) in enumerate(image_data.items()):
-        # Save image as PNG
-        image_io = io.BytesIO()
-        image.save(image_io, format='PNG')
-        image_bytes = image_io.getvalue()
-        # Convert image to base64
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        image_data[f'{filename}'] = image_base64
-
-    return {
-        "filename": filename,
-        "markdown": markdown_text,
+    kwargs = {
+        "max_pages": max_pages,
+        "start_page": start_page,
         "metadata": metadata,
-        "images": image_data,
-        "status": "ok",
-        "time": time_difference
+        "langs": langs,
+        "batch_multiplier": batch_multiplier,
+        "ocr_all_pages": ocr_all_pages
     }
+    if file:
+        with tempfile.NamedTemporaryFile('w+b', suffix=".pdf") as temp_pdf:
+            temp_pdf.write(file.read())
+            temp_pdf.seek(0)
+            filepath = temp_pdf.name
+            convert_single_file(filepath, output_folder, **kwargs)
+
+    return convert_single_file(filepath, output_folder, **kwargs)
 
 
 # Endpoint to convert multiple PDFs to markdown
@@ -226,25 +232,10 @@ async def convert_files_to_markdown(
     time.sleep(10)
     print("filepaths: ", filepaths)
 
-    async def process_file(file: UploadFile, filepath: str, output_folder: str):
-        return await convert_file_to_markdown(
-            file=file,
-            filepath=filepath,
-            output_folder=output_folder,
-        )
-
-    def run_in_thread(file: UploadFile, filepath: str, output_folder: str):
-        # Run the asynchronous function in the event loop and return the result
-        return asyncio.run(process_file(file, filepath, output_folder))
-
-    entry_time = time.time()
-    print(f"Entry time : {entry_time}")
-
-    # responses = await process_files(files, filepaths, output_folder, workers)
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_file = {executor.submit(run_in_thread, file, filepath, output_folder): file for file, filepath in zip(files, filepaths)}
-        for future in concurrent.futures.as_completed(future_to_file):
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_file = {executor.submit(convert_file_to_markdown, file, filepath, output_folder): file for file, filepath in zip(files, filepaths)}
+        for future in as_completed(future_to_file):
             try:
                 result = future.result()
                 results.append(result)
@@ -254,11 +245,6 @@ async def convert_files_to_markdown(
                     "status": "error",
                     "error": str(e)
                 })
-
-    completion_time = time.time()
-    print(f"Model processes complete time : {completion_time}")
-    time_difference = completion_time - entry_time
-    print(f"Time taken: {time_difference}")
 
     return results
 
@@ -347,7 +333,8 @@ async def batch_convert_files_to_markdown2(
 
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_file = {executor.submit(process_file, file, model_list, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages): file for file in files}
+        future_to_file = {executor.submit(process_file, file, MODEL_LIST, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages): file for
+                          file in files}
         for future in as_completed(future_to_file):
             result = future.result()
             results.append(result)
