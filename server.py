@@ -300,7 +300,7 @@ async def batch_convert_files_to_markdown2(
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    def process_file(file: UploadFile, model_list, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages):
+    async def process_file(file: UploadFile, model_list, max_pages, start_page, metadata, langs, batch_multiplier, ocr_all_pages):
         try:
             filename = file.filename
             print(f"Processing file: {filename}")
