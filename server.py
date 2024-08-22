@@ -6,7 +6,7 @@
 @Author   : Hjw
 @License  : (C)Copyright 2018-2025
 """
-
+import io
 import os
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # For some reason, transformers decided to use .isin for a simple op, which is not supported on MPS
@@ -173,6 +173,12 @@ async def convert_file_to_markdown(
             "status": "ok",
             "time": time_difference
         }
+    for i, (filename, image) in enumerate(image_data.items()):
+        # Save image as PNG
+        image_bytes = image.save(io.BytesIO(), format='PNG')
+        # Convert image to base64
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        image_data[f'{filename}'] = image_base64
 
     return {
         "filename": filename,
