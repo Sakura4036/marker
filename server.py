@@ -233,14 +233,9 @@ async def convert_files_to_markdown(
             output_folder=output_folder,
         )
 
-    async def process_files(files, filepaths, output_folder, workers):
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            coroutines = [
-                loop.run_in_executor(pool, convert_file_to_markdown, await file.read(), filepath, output_folder)
-                for file, filepath in zip(files,filepaths)
-            ]
-            return await asyncio.gather(*coroutines)
+    def run_in_thread(file: UploadFile, filepath: str, output_folder: str):
+        # Run the asynchronous function in the event loop and return the result
+        return asyncio.run(process_file(file, filepath, output_folder))
 
     entry_time = time.time()
     print(f"Entry time : {entry_time}")
@@ -248,7 +243,7 @@ async def convert_files_to_markdown(
     # responses = await process_files(files, filepaths, output_folder, workers)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_file = {executor.submit(process_file, file, filepath, output_folder): file for file, filepath in zip(files, filepaths)}
+        future_to_file = {executor.submit(run_in_thread, file, filepath, output_folder): file for file, filepath in zip(files, filepaths)}
         for future in concurrent.futures.as_completed(future_to_file):
             try:
                 result = future.result()
