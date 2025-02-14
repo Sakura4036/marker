@@ -20,7 +20,7 @@ import argparse
 import time
 import base64
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddlewareserver.py
 from typing import List, Optional
 import concurrent.futures
 from marker.convert import convert_single_pdf  # Import function to parse PDF
