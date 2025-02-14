@@ -8,6 +8,11 @@ wandb
 *.dat
 report.json
 benchmark_data
+debug_data
+temp.md
+temp
+conversion_results
+uploads
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -171,3 +176,6 @@ cython_debug/
 .idea/
 
 output/
+.vscode/
+paper/
+*.out
