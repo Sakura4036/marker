@@ -15,10 +15,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import numpy as np
 
 from marker.config.parser import ConfigParser
 from marker.models import create_model_dict
-from marker.output import save_markdown, get_markdown_filepath, save_output
+from marker.output import get_markdown_filepath, save_output
 from marker.settings import settings
 
 # 全局变量
@@ -192,6 +193,55 @@ def convert_file_to_markdown(
     )
 
 
+def process_batch(task_args, device_id, workers):
+    """
+    在指定GPU设备上处理一批文件
+    
+    Args:
+        task_args: 包含文件路径和配置的任务参数列表
+        device_id: GPU设备ID
+        workers: 每个GPU的worker数量
+    """
+    # 设置当前进程使用的GPU设备
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+
+    try:
+        # 初始化模型并共享内存
+        models = create_model_dict()
+        for model in models.values():
+            if model is not None:
+                model.share_memory()
+
+        results = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = []
+            for filepath, config in task_args:
+                future = executor.submit(
+                    convert_single_file,
+                    filepath=filepath,
+                    **config
+                )
+                futures.append(future)
+
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    results.append({
+                        "status": "error",
+                        "error": str(e)
+                    })
+
+        return results
+
+    except Exception as e:
+        return [{
+            "status": "error",
+            "error": f"GPU {device_id} batch processing error: {str(e)}"
+        }]
+
+
 @app.post("/batch_convert")
 async def convert_files_to_markdown(
         files: List[UploadFile] = None,
@@ -208,51 +258,56 @@ async def convert_files_to_markdown(
     if not filepaths and not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
+    # 准备文件路径列表
     if not files:
-        filenames = [os.path.basename(filepath) for filepath in filepaths]
-        files = [None for _ in range(len(filepaths))]
+        files_to_process = [(filepath, None) for filepath in filepaths]
     else:
-        filenames = [file.filename for file in files]
-        filepaths = ['' for _ in range(len(files))]
+        # 保存上传的文件到临时目录
+        files_to_process = []
+        for file in files:
+            with tempfile.NamedTemporaryFile('w+b', suffix=".pdf", delete=False) as temp_pdf:
+                temp_pdf.write(await file.read())
+                files_to_process.append((temp_pdf.name, file.filename))
 
-    assert len(files) == len(filepaths), "Number of files and filepaths do not match"
-    print(f"Processing {len(files)} files with {workers} workers on {num_gpus} GPUs")
+    print(f"Processing {len(files_to_process)} files with {workers} workers on {num_gpus} GPUs")
 
-    # 配置GPU设备
-    if num_gpus > 1:
-        devices = [f"cuda:{i}" for i in range(num_gpus)]
-        workers_per_gpu = max(1, workers // num_gpus)
-    else:
-        devices = [settings.TORCH_DEVICE]
-        workers_per_gpu = workers
+    # 根据GPU数量拆分任务
+    num_gpus = min(num_gpus, len(files_to_process))  # 不要使用多于文件数的GPU
+    chunks = np.array_split(files_to_process, num_gpus)
+
+    # 准备每个GPU的任务参数
+    tasks = []
+    workers_per_gpu = max(1, workers // num_gpus)
+
+    for gpu_id, chunk in enumerate(chunks):
+        task_args = []
+        for filepath, original_name in chunk:
+            config = {
+                "output_folder": output_folder,
+                "use_llm": use_llm
+            }
+            task_args.append((filepath, config))
+        tasks.append((task_args, gpu_id, workers_per_gpu))
+
+    # 使用进程池并行处理各个GPU上的任务
+    try:
+        mp.set_start_method('spawn')
+    except RuntimeError:
+        pass
 
     results = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_file = {}
-        for i, (file, filepath) in enumerate(zip(files, filepaths)):
-            # 选择GPU设备
-            device_idx = i % len(devices) if len(devices) > 1 else 0
-            os.environ["TORCH_DEVICE"] = devices[device_idx]
+    with mp.Pool(processes=num_gpus) as pool:
+        batch_results = pool.starmap(process_batch, tasks)
+        for batch in batch_results:
+            results.extend(batch)
 
-            future = executor.submit(
-                convert_file_to_markdown,
-                file=file,
-                filepath=filepath,
-                output_folder=output_folder,
-                use_llm=use_llm
-            )
-            future_to_file[future] = file or filepath
-
-        for future in as_completed(future_to_file):
+    # 清理临时文件
+    if files:
+        for filepath, _ in files_to_process:
             try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    "filename": future_to_file[future],
-                    "status": "error",
-                    "error": str(e)
-                })
+                os.unlink(filepath)
+            except:
+                pass
 
     return results
 
