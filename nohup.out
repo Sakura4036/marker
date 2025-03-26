@@ -1,0 +1,17 @@
+INFO:     Started server process [6262]
+INFO:     Waiting for application startup.
+/home/huangjiawen/anaconda3/envs/marker/lib/python3.10/site-packages/transformers/tokenization_utils_base.py:1601: FutureWarning: `clean_up_tokenization_spaces` was not set. It will be set to `True` by default. This behavior will be depracted in transformers v4.45, and will be then set to `False` by default. For more details check this issue: https://github.com/huggingface/transformers/issues/31884
+  warnings.warn(
+/home/huangjiawen/anaconda3/envs/marker/lib/python3.10/site-packages/transformers/models/auto/image_processing_auto.py:513: FutureWarning: The image_processor_class argument is deprecated and will be removed in v4.42. Please use `slow_image_processor_class`, or `fast_image_processor_class` instead
+  warnings.warn(
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8013 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [6262]
+Loaded detection model vikp/surya_det3 on device cuda with dtype torch.float16
+Loaded detection model vikp/surya_layout3 on device cuda with dtype torch.float16
+Loaded reading order model vikp/surya_order on device cuda with dtype torch.float16
+Loaded recognition model vikp/surya_rec2 on device cuda with dtype torch.float16
+Loaded texify model to cuda with torch.float16 dtype

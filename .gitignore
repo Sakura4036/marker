@@ -176,3 +176,8 @@ cython_debug/
 .idea/
 
 .vscode/
+
+output/
+paper/
+logs/
+*.log
