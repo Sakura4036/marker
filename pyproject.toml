@@ -59,6 +59,11 @@ marker_chunk_convert = "marker.scripts.chunk_convert:chunk_convert_cli"
 marker_gui = "marker.scripts.run_streamlit_app:streamlit_app_cli"
 marker_server = "marker.scripts.server:server_cli"
 
+[[tool.poetry.source]]
+name = "mirrors"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+priority = "default"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

@@ -1,5 +1,5 @@
 cd ~/matwings/marker
 
 source activate marker
-
-nohup python server.py --port 8013 --worker 4 --cpu 8 > logs/run_$(date +%y%m%d).log 2>&1 &
+CUDA_VISIBLE_DEVICES=1
+nohup python server.py --port 8013 --workers 16 > logs/run_$(date +%y%m%d).log 2>&1 &

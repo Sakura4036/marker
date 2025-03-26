@@ -9,14 +9,11 @@ import os
 import tempfile
 import time
 from typing import List, Optional, Dict
-
+import torch
 import torch.multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import numpy as np
-
 from marker.config.parser import ConfigParser
 from marker.models import create_model_dict
 from marker.output import get_markdown_filepath, save_output
@@ -24,30 +21,65 @@ from marker.settings import settings
 
 # 全局变量
 OUTPUT_FOLDER = 'output'
-app_data = {}
+model_refs = None  # 用于在进程间共享模型
+
+
+def create_shared_models():
+    """
+    创建可在进程间共享的模型
+    确保在主进程中正确初始化CUDA设备
+    """
+    try:
+        # 获取可用的GPU数量
+        n_gpus = torch.cuda.device_count()
+        if n_gpus == 0:
+            print("No CUDA devices available. Using CPU.")
+            return create_model_dict(device="cpu")
+        else:
+            print(f"Found {n_gpus} CUDA devices")
+            
+        # 始终使用 GPU 0 来避免设备间共享内存的问题
+        gpu_id = 0
+        torch.cuda.set_device(gpu_id)
+        device = f"cuda:{gpu_id}"
+        print(f"Initializing models on {device}")
+        
+        models = create_model_dict(device=device)
+        # 确保所有模型都在共享内存中
+        for model in models.values():
+            if model is not None:
+                model.model.share_memory()
+        return models
+    except Exception as e:
+        print(f"Error creating shared models: {e}")
+        print("Falling back to CPU")
+        return create_model_dict(device="cpu")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     服务启动时加载模型
-    支持多GPU配置
+    支持多GPU配置，确保正确的设备初始化
     """
     try:
-        mp.set_start_method('spawn')
+        # 设置多进程启动方式
+        mp.set_start_method('spawn', force=True)
     except RuntimeError:
-        raise RuntimeError("Set start method to spawn twice. Please try running it again.")
-
-    global app_data
+        print("Warning: spawn start method already set")
+        
+    global model_refs
     if settings.TORCH_DEVICE == "mps":
         print("Cannot use MPS with torch multiprocessing share_memory. Using CPU instead.")
-        app_data = {}
+        model_refs = create_model_dict(device="cpu")
     else:
-        app_data["models"] = create_model_dict()
-        for model_name, model in app_data["models"].items():
-            if model is not None:
-                model.share_memory()
+        model_refs = create_shared_models()
+        
     yield
+    
+    # 清理模型
+    if model_refs:
+        del model_refs
 
 
 # 初始化FastAPI
@@ -72,14 +104,29 @@ def convert_single_file(
         langs: Optional[List[str]] = None,
         batch_multiplier: int = 1,
         ocr_all_pages: bool = False,
-        use_llm: bool = False
+        use_llm: bool = False,
+        output_format: str = "markdown",
 ) -> Dict:
     """
     转换单个PDF文件
+    
+    Args:
+        filepath: PDF文件路径
+        output_folder: 输出文件夹
+        max_pages: 最大页数
+        start_page: 起始页数
+        metadata: 元数据
+        langs: 语言列表
+        batch_multiplier: 批处理倍数
+        ocr_all_pages: 是否OCR所有页
+        use_llm: 是否使用LLM
+        output_format: 输出格式，默认为markdown，支持markdown和json，html
     """
     if not filepath:
         raise HTTPException(status_code=400, detail="No file provided")
-
+    if not output_folder:
+        output_folder = OUTPUT_FOLDER
+        os.makedirs(output_folder, exist_ok=True)
     # 配置转换参数
     config = {
         "output_dir": output_folder,
@@ -89,23 +136,28 @@ def convert_single_file(
         "languages": langs,
         "batch_multiplier": batch_multiplier,
         "force_ocr": ocr_all_pages,
-        "use_llm": use_llm
+        "use_llm": use_llm,
+        "output_format": output_format
     }
 
+    print("Converting file: ", filepath)
+    print("Output folder: ", output_folder)
     filename = os.path.basename(filepath)
     markdown_filepath = get_markdown_filepath(output_folder, filename)
+    out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
+    print("Check Markdown file path: ", markdown_filepath)
 
     # 检查是否已存在转换结果
     if os.path.exists(markdown_filepath):
+        print(f"File {filename} already exists. Returning existing file.")
         markdown_text = open(markdown_filepath, "r", encoding='utf-8').read()
-        out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
-        metadata = json.load(open(out_meta_filepath, "r")) if os.path.exists(out_meta_filepath) else {}
+        # metadata = json.load(open(out_meta_filepath, "r")) if os.path.exists(out_meta_filepath) else {}
 
         return {
             "filename": filename,
             "markdown": markdown_text,
             "markdown_filepath": markdown_filepath,
-            "metadata": metadata,
+            # "metadata": metadata,
             "metadata_filepath": out_meta_filepath,
             "status": "ok",
             "time": 0
@@ -114,13 +166,14 @@ def convert_single_file(
     # 执行转换
     entry_time = time.time()
     print(f"Processing file: {filename}")
+    print(f"file {filepath} is exist: {os.path.exists(filepath)}")
 
     try:
         config_parser = ConfigParser(config)
         converter_cls = config_parser.get_converter_cls()
         converter = converter_cls(
             config=config_parser.generate_config_dict(),
-            artifact_dict=app_data["models"],
+            artifact_dict=model_refs,
             processor_list=config_parser.get_processors(),
             renderer=config_parser.get_renderer(),
             llm_service=config_parser.get_llm_service()
@@ -129,7 +182,6 @@ def convert_single_file(
 
         # 保存结果
         out_folder = config_parser.get_output_folder(filepath)
-        # save_markdown(out_folder, filename, rendered.markdown, rendered.images, rendered.metadata)
         save_output(rendered, out_folder, config_parser.get_base_filename(filepath))
 
         completion_time = time.time()
@@ -140,13 +192,14 @@ def convert_single_file(
             "filename": filename,
             "markdown": rendered.markdown,
             "markdown_filepath": markdown_filepath,
-            "metadata": rendered.metadata,
+            # "metadata": rendered.metadata,
+            "metadata_filepath": out_meta_filepath,
             "status": "ok",
             "time": time_difference
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. \n{e}")
+        raise HTTPException(status_code=400, detail=f"Error processing file: {filename}. {e}")
 
 
 @app.get("/")
@@ -158,156 +211,186 @@ def server():
 
 
 @app.post("/convert")
-def convert_file_to_markdown(
+async def convert_file_to_markdown(
         file: UploadFile = None,
         filepath: str = None,
-        output_folder: str = None,
+        output_folder: str = OUTPUT_FOLDER,
         max_pages: int = None,
         start_page: int = None,
         metadata: Optional[dict] = None,
         langs: Optional[List[str]] = None,
         batch_multiplier: int = 1,
         ocr_all_pages: bool = False,
-        use_llm: bool = False
+        use_llm: bool = False,
+        output_format: str = "markdown",
 ):
     """
     单文件转换接口
     支持上传文件或指定文件路径
     """
+    kwargs = {
+        "max_pages": max_pages,
+        "start_page": start_page,
+        "metadata": metadata,
+        "langs": langs,
+        "batch_multiplier": batch_multiplier,
+        "ocr_all_pages": ocr_all_pages,
+        "use_llm": use_llm,
+        "output_format": output_format
+    }
     if file:
-        with tempfile.NamedTemporaryFile('w+b', suffix=".pdf") as temp_pdf:
-            temp_pdf.write(file.read())
+        with tempfile.NamedTemporaryFile('w+b', suffix=".pdf", delete=False) as temp_pdf:
+            temp_pdf.write(await file.read())
             temp_pdf.seek(0)
             filepath = temp_pdf.name
-
-    return convert_single_file(
+    result = convert_single_file(
         filepath=filepath,
         output_folder=output_folder,
-        max_pages=max_pages,
-        start_page=start_page,
-        metadata=metadata,
-        langs=langs,
-        batch_multiplier=batch_multiplier,
-        ocr_all_pages=ocr_all_pages,
-        use_llm=use_llm
+        **kwargs
     )
+    try:
+        if os.path.exists(filepath):
+            os.unlink(filepath)
+    except Exception as e:
+        print(f"Error deleting temporary file {filepath}: {e}")
+
+    return result
 
 
-def process_batch(task_args, device_id, workers):
+def worker_init(model_dict):
     """
-    在指定GPU设备上处理一批文件
+    初始化worker进程的模型
+    确保在worker进程中使用相同的GPU设备
+    """
+    global model_refs
+    model_refs = model_dict
     
-    Args:
-        task_args: 包含文件路径和配置的任务参数列表
-        device_id: GPU设备ID
-        workers: 每个GPU的worker数量
+    # 在worker进程中设置CUDA设备为GPU 0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)  # 强制使用 GPU 0
+
+
+def process_single_pdf(args):
     """
-    # 设置当前进程使用的GPU设备
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+    处理单个PDF文件的worker函数
+    返回与原接口兼容的结果格式
+    """
+    filepath, cli_options = args
+    entry_time = time.time()
 
     try:
-        # 初始化模型并共享内存
-        models = create_model_dict()
-        for model in models.values():
-            if model is not None:
-                model.share_memory()
+        config_parser = ConfigParser(cli_options)
+        converter_cls = config_parser.get_converter_cls()
 
-        results = []
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = []
-            for filepath, config in task_args:
-                future = executor.submit(
-                    convert_single_file,
-                    filepath=filepath,
-                    **config
-                )
-                futures.append(future)
+        converter = converter_cls(
+            config=config_parser.generate_config_dict(),
+            artifact_dict=model_refs,  # 直接使用全局model_refs
+            processor_list=config_parser.get_processors(),
+            renderer=config_parser.get_renderer(),
+            llm_service=config_parser.get_llm_service()
+        )
 
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    results.append({
-                        "status": "error",
-                        "error": str(e)
-                    })
+        rendered = converter(filepath)
+        out_folder = config_parser.get_output_folder(filepath)
+        save_output(rendered, out_folder, config_parser.get_base_filename(filepath))
 
-        return results
+        completion_time = time.time()
+        filename = os.path.basename(filepath)
+        markdown_filepath = get_markdown_filepath(out_folder, filename)
+        out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
+        return {
+            "filename": filename,
+            "markdown": rendered.markdown,
+            "markdown_filepath": markdown_filepath,
+            # "metadata": rendered.metadata,
+            "metadata_filepath": out_meta_filepath,
+            "status": "ok",
+            "time": completion_time - entry_time
+        }
 
     except Exception as e:
-        return [{
+        return {
+            "filename": os.path.basename(filepath),
             "status": "error",
-            "error": f"GPU {device_id} batch processing error: {str(e)}"
-        }]
+            "error": str(e)
+        }
 
 
 @app.post("/batch_convert")
 async def convert_files_to_markdown(
         files: List[UploadFile] = None,
         filepaths: List[str] = None,
-        output_folder: str = None,
-        workers: int = 4,
-        num_gpus: int = 1,
-        use_llm: bool = False
+        output_folder: str = OUTPUT_FOLDER,
+        max_pages: int = None,
+        start_page: int = None,
+        metadata: Optional[dict] = None,
+        langs: Optional[List[str]] = None,
+        batch_multiplier: int = 1,
+        ocr_all_pages: bool = False,
+        use_llm: bool = False,
+        output_format: str = "markdown",
+        workers: int = os.environ.get("WORKERS", 4),
 ):
     """
     批量文件转换接口
-    支持多workers和多GPU配置
+    使用multiprocessing处理多个文件
     """
+    print([file.filename for file in files] if files else "no files")
     if not filepaths and not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # 准备文件路径列表
-    if not files:
-        files_to_process = [(filepath, None) for filepath in filepaths]
-    else:
-        # 保存上传的文件到临时目录
-        files_to_process = []
-        for file in files:
-            with tempfile.NamedTemporaryFile('w+b', suffix=".pdf", delete=False) as temp_pdf:
-                temp_pdf.write(await file.read())
-                files_to_process.append((temp_pdf.name, file.filename))
-
-    print(f"Processing {len(files_to_process)} files with {workers} workers on {num_gpus} GPUs")
-
-    # 根据GPU数量拆分任务
-    num_gpus = min(num_gpus, len(files_to_process))  # 不要使用多于文件数的GPU
-    chunks = np.array_split(files_to_process, num_gpus)
-
-    # 准备每个GPU的任务参数
-    tasks = []
-    workers_per_gpu = max(1, workers // num_gpus)
-
-    for gpu_id, chunk in enumerate(chunks):
-        task_args = []
-        for filepath, original_name in chunk:
-            config = {
-                "output_folder": output_folder,
-                "use_llm": use_llm
-            }
-            task_args.append((filepath, config))
-        tasks.append((task_args, gpu_id, workers_per_gpu))
-
-    # 使用进程池并行处理各个GPU上的任务
-    try:
-        mp.set_start_method('spawn')
-    except RuntimeError:
-        pass
-
+    temp_files = []  # 存储临时文件路径
     results = []
-    with mp.Pool(processes=num_gpus) as pool:
-        batch_results = pool.starmap(process_batch, tasks)
-        for batch in batch_results:
-            results.extend(batch)
+    try:
+        # 处理文件上传或文件路径
+        if not files:
+            for filepath in filepaths:
+                if not os.path.exists(filepath):
+                    raise HTTPException(status_code=400, detail=f"File not found: {filepath}")
+        else:
+            filepaths = []
+            for file in files:
+                with tempfile.NamedTemporaryFile('w+b', suffix=".pdf", delete=False) as temp_pdf:
+                    content = await file.read()
+                    temp_pdf.write(content)
+                    temp_pdf.flush()
+                    filepaths.append(temp_pdf.name)
+                    temp_files.append(temp_pdf.name)
+                await file.close()
 
-    # 清理临时文件
-    if files:
-        for filepath, _ in files_to_process:
+        # 准备转换配置
+        config = {
+            "output_dir": output_folder,
+            "max_pages": max_pages,
+            "start_page": start_page,
+            "metadata": metadata,
+            "languages": langs,
+            "batch_multiplier": batch_multiplier,
+            "force_ocr": ocr_all_pages,
+            "use_llm": use_llm,
+            "output_format": output_format,
+            "disable_multiprocessing": True  # 禁用嵌套多进程
+        }
+
+        total_processes = min(len(filepaths), workers)
+
+        # 使用全局model_refs
+        global model_refs
+
+        # 使用进程池处理文件
+        with mp.Pool(processes=total_processes,
+                     initializer=worker_init,
+                     initargs=(model_refs,)) as pool:
+            results = list(pool.imap(process_single_pdf, [(f, config) for f in filepaths]))
+
+    finally:
+        # 清理临时文件
+        for temp_file in temp_files:
             try:
-                os.unlink(filepath)
-            except:
-                pass
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                print(f"Error deleting temporary file {temp_file}: {e}")
 
     return results
 
@@ -315,7 +398,7 @@ async def convert_files_to_markdown(
 def main():
     """
     启动服务
-    支持配置host、port和GPU数量
+    支持配置host、port和workers数量
     """
     import argparse
     import uvicorn
@@ -323,13 +406,11 @@ def main():
     parser = argparse.ArgumentParser(description="Run the marker-api server.")
     parser.add_argument("--host", default="0.0.0.0", help="Host IP address")
     parser.add_argument("--port", type=int, default=8000, help="Port number")
-    parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs to use")
     parser.add_argument("--workers", type=int, default=4, help="Number of worker processes")
 
     args = parser.parse_args()
 
     # 设置环境变量
-    os.environ["NUM_GPUS"] = str(args.num_gpus)
     os.environ["WORKERS"] = str(args.workers)
 
     uvicorn.run("server:app", host=args.host, port=args.port)
