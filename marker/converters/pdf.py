@@ -1,12 +1,7 @@
 import os
-
-from marker.services.gemini import GoogleGeminiService
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disables a tokenizers warning
 
-import inspect
 from collections import defaultdict
-from functools import cache
 from typing import Annotated, Any, Dict, List, Optional, Type, Tuple
 
 from marker.processors import BaseProcessor
@@ -32,7 +27,7 @@ from marker.processors.llm.llm_complex import LLMComplexRegionProcessor
 from marker.processors.llm.llm_form import LLMFormProcessor
 from marker.processors.llm.llm_image_description import LLMImageDescriptionProcessor
 from marker.processors.llm.llm_table import LLMTableProcessor
-from marker.processors.llm.llm_text import LLMTextProcessor
+from marker.processors.llm.llm_inlinemath import LLMInlineMathLinesProcessor
 from marker.processors.page_header import PageHeaderProcessor
 from marker.processors.reference import ReferenceProcessor
 from marker.processors.sectionheader import SectionHeaderProcessor
@@ -46,6 +41,9 @@ from marker.schema.registry import register_block_class
 from marker.util import strings_to_classes
 from marker.processors.llm.llm_handwriting import LLMHandwritingProcessor
 from marker.processors.order import OrderProcessor
+from marker.services.gemini import GoogleGeminiService
+from marker.processors.line_merge import LineMergeProcessor
+from marker.processors.llm.llm_mathblock import LLMMathBlockProcessor
 
 
 class PdfConverter(BaseConverter):
@@ -65,6 +63,7 @@ class PdfConverter(BaseConverter):
     ] = False
     default_processors: Tuple[BaseProcessor, ...] = (
         OrderProcessor,
+        LineMergeProcessor,
         BlockquoteProcessor,
         CodeProcessor,
         DocumentTOCProcessor,
@@ -80,11 +79,12 @@ class PdfConverter(BaseConverter):
         LLMTableMergeProcessor,
         LLMFormProcessor,
         TextProcessor,
-        LLMTextProcessor,
+        LLMInlineMathLinesProcessor,
         LLMComplexRegionProcessor,
         LLMImageDescriptionProcessor,
         LLMEquationProcessor,
         LLMHandwritingProcessor,
+        LLMMathBlockProcessor,
         ReferenceProcessor,
         DebugProcessor,
     )
@@ -98,6 +98,9 @@ class PdfConverter(BaseConverter):
         config=None
     ):
         super().__init__(config)
+
+        if config is None:
+            config = {}
 
         for block_type, override_block_type in self.override_map.items():
             register_block_class(block_type, override_block_type)
@@ -132,14 +135,13 @@ class PdfConverter(BaseConverter):
         if self.use_llm:
             self.layout_builder_class = LLMLayoutBuilder
 
-    @cache
     def build_document(self, filepath: str):
         provider_cls = provider_from_filepath(filepath)
         layout_builder = self.resolve_dependencies(self.layout_builder_class)
         line_builder = self.resolve_dependencies(LineBuilder)
         ocr_builder = self.resolve_dependencies(OcrBuilder)
-        with provider_cls(filepath, self.config) as provider:
-            document = DocumentBuilder(self.config)(provider, layout_builder, line_builder, ocr_builder)
+        provider = provider_cls(filepath, self.config)
+        document = DocumentBuilder(self.config)(provider, layout_builder, line_builder, ocr_builder)
         structure_builder_cls = self.resolve_dependencies(StructureBuilder)
         structure_builder_cls(document)
 

@@ -1,8 +1,10 @@
 import os
+import sys
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["IN_STREAMLIT"] = "true"
 
 from marker.settings import settings
+from marker.config.printer import CustomClickPrinter
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 import base64
@@ -12,6 +14,7 @@ import re
 import string
 import tempfile
 from typing import Any, Dict
+import click
 
 import pypdfium2
 import streamlit as st
@@ -38,10 +41,33 @@ COLORS = [
 ]
 
 with open(
-    os.path.join(os.path.dirname(__file__), "streamlit_app_blocks_viz.html")
+    os.path.join(os.path.dirname(__file__), "streamlit_app_blocks_viz.html"), encoding="utf-8"
 ) as f:
     BLOCKS_VIZ_TMPL = string.Template(f.read())
 
+
+@st.cache_data()
+def parse_args():
+    # Use to grab common cli options
+    @ConfigParser.common_options
+    def options_func():
+        pass
+
+    def extract_click_params(decorated_function):
+        if hasattr(decorated_function, '__click_params__'):
+            return decorated_function.__click_params__
+        return []
+
+    cmd = CustomClickPrinter("Marker app.")
+    extracted_params = extract_click_params(options_func)
+    cmd.params.extend(extracted_params)
+    ctx = click.Context(cmd)
+    try:
+        cmd_args = sys.argv[1:]
+        cmd.parse_args(ctx, cmd_args)
+        return ctx.params
+    except click.exceptions.ClickException as e:
+        return {"error": str(e)}
 
 @st.cache_resource()
 def load_models():
@@ -134,7 +160,7 @@ def block_display(image: Image, blocks: dict | None = None, dpi=96):
     }
     return components.html(
         BLOCKS_VIZ_TMPL.substitute(**template_values),
-        height=image.height, width=image.width
+        height=image.height
     )
 
 
@@ -142,6 +168,7 @@ st.set_page_config(layout="wide")
 col1, col2 = st.columns([.5, .5])
 
 model_dict = load_models()
+cli_options = parse_args()
 
 
 st.markdown("""
@@ -152,7 +179,7 @@ This app will let you try marker, a PDF or image -> Markdown, HTML, JSON convert
 Find the project [here](https://github.com/VikParuchuri/marker).
 """)
 
-in_file: UploadedFile = st.sidebar.file_uploader("PDF or image file:", type=["pdf", "png", "jpg", "jpeg", "gif"])
+in_file: UploadedFile = st.sidebar.file_uploader("PDF, document, or image file:", type=["pdf", "png", "jpg", "jpeg", "gif", "pptx", "docx", "xlsx", "html", "epub"])
 
 if in_file is None:
     st.stop()
@@ -183,11 +210,12 @@ if not run_marker:
     st.stop()
 
 # Run Marker
-with tempfile.NamedTemporaryFile(suffix=".pdf", mode="wb+") as temp_pdf:
-    temp_pdf.write(in_file.getvalue())
-    temp_pdf.seek(0)
-    filename = temp_pdf.name
-    cli_options = {
+with tempfile.TemporaryDirectory() as tmp_dir:
+    temp_pdf = os.path.join(tmp_dir, 'temp.pdf')
+    with open(temp_pdf, 'wb') as f:
+        f.write(in_file.getvalue())
+    
+    cli_options.update({
         "output_format": output_format,
         "page_range": page_range,
         "force_ocr": force_ocr,
@@ -195,10 +223,10 @@ with tempfile.NamedTemporaryFile(suffix=".pdf", mode="wb+") as temp_pdf:
         "output_dir": settings.DEBUG_DATA_FOLDER if debug else None,
         "use_llm": use_llm,
         "strip_existing_ocr": strip_existing_ocr
-    }
+    })
     config_parser = ConfigParser(cli_options)
     rendered = convert_pdf(
-        filename,
+        temp_pdf,
         config_parser
     )
     page_range = config_parser.generate_config_dict()["page_range"]
@@ -228,3 +256,5 @@ if debug:
             layout_image_path = os.path.join(debug_data_path, f"layout_page_{first_page}.png")
             img = Image.open(layout_image_path)
             st.image(img, caption="Layout debug image", use_container_width=True)
+        st.write("Raw output:")
+        st.code(text, language=output_format)
