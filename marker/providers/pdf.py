@@ -1,4 +1,4 @@
-import atexit
+import contextlib
 import ctypes
 import re
 from typing import Annotated, Dict, List, Optional, Set
@@ -9,7 +9,7 @@ from ftfy import fix_text
 from pdftext.extraction import dictionary_output
 from pdftext.schema import Reference
 from PIL import Image
-from pypdfium2 import PdfiumError
+from pypdfium2 import PdfiumError, PdfDocument
 
 from marker.providers import BaseProvider, ProviderOutput, Char, ProviderPageLines
 from marker.providers.utils import alphanum_ratio
@@ -74,33 +74,37 @@ class PdfProvider(BaseProvider):
     def __init__(self, filepath: str, config=None):
         super().__init__(filepath, config)
 
-        self.doc: pdfium.PdfDocument = pdfium.PdfDocument(self.filepath)
-        self.page_lines: ProviderPageLines = {i: [] for i in range(len(self.doc))}
-        self.page_refs: Dict[int, List[Reference]] = {i: [] for i in range(len(self.doc))}
+        self.filepath = filepath
 
-        if self.page_range is None:
-            self.page_range = range(len(self.doc))
+        with self.get_doc() as doc:
+            self.page_count = len(doc)
+            self.page_lines: ProviderPageLines = {i: [] for i in range(len(doc))}
+            self.page_refs: Dict[int, List[Reference]] = {i: [] for i in range(len(doc))}
 
-        assert max(self.page_range) < len(self.doc) and min(self.page_range) >= 0, \
-            f"Invalid page range, values must be between 0 and {len(self.doc) - 1}.  Min of provided page range is {min(self.page_range)} and max is {max(self.page_range)}."
+            if self.page_range is None:
+                self.page_range = range(len(doc))
 
-        if self.force_ocr:
-            # Manually assign page bboxes, since we can't get them from pdftext
-            self.page_bboxes = {i: self.doc[i].get_bbox() for i in self.page_range}
-        else:
-            self.page_lines = self.pdftext_extraction()
+            assert max(self.page_range) < len(doc) and min(self.page_range) >= 0, \
+                f"Invalid page range, values must be between 0 and {len(doc) - 1}.  Min of provided page range is {min(self.page_range)} and max is {max(self.page_range)}."
 
-        atexit.register(self.cleanup_pdf_doc)
+            if self.force_ocr:
+                # Manually assign page bboxes, since we can't get them from pdftext
+                self.page_bboxes = {i: doc[i].get_bbox() for i in self.page_range}
+            else:
+                self.page_lines = self.pdftext_extraction(doc)
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.cleanup_pdf_doc()
+    @contextlib.contextmanager
+    def get_doc(self):
+        doc = None
+        try:
+            doc = pdfium.PdfDocument(self.filepath)
+            yield doc
+        finally:
+            if doc:
+                doc.close()
 
     def __len__(self) -> int:
-        return len(self.doc)
-
-    def cleanup_pdf_doc(self):
-        if self.doc is not None:
-            self.doc.close()
+        return self.page_count
 
     def font_flags_to_format(self, flags: Optional[int]) -> Set[str]:
         if flags is None:
@@ -166,7 +170,7 @@ class PdfProvider(BaseProvider):
             text = text.replace(space, ' ')
         return text
 
-    def pdftext_extraction(self) -> ProviderPageLines:
+    def pdftext_extraction(self, doc: PdfDocument) -> ProviderPageLines:
         page_lines: ProviderPageLines = {}
         page_char_blocks = dictionary_output(
             self.filepath,
@@ -185,7 +189,7 @@ class PdfProvider(BaseProvider):
         for page in page_char_blocks:
             page_id = page["page"]
             lines: List[ProviderOutput] = []
-            if not self.check_page(page_id):
+            if not self.check_page(page_id, doc):
                 continue
 
             for block in page["blocks"]:
@@ -201,10 +205,16 @@ class PdfProvider(BaseProvider):
                         font_size = span["font"]["size"] or 0
                         polygon = PolygonBox.from_bbox(span["bbox"], ensure_nonzero_area=True)
                         span_chars = [Char(char=c['char'], polygon=PolygonBox.from_bbox(c['bbox'], ensure_nonzero_area=True), char_idx=c['char_idx']) for c in span["chars"]]
+                        superscript = span.get("superscript", False)
+                        subscript = span.get("subscript", False)
+                        text = self.normalize_spaces(fix_text(span["text"]))
+                        if superscript or superscript:
+                            text = text.strip()
+
                         spans.append(
                             SpanClass(
                                 polygon=polygon,
-                                text=self.normalize_spaces(fix_text(span["text"])),
+                                text=text,
                                 font=font_name,
                                 font_weight=font_weight,
                                 font_size=font_size,
@@ -214,6 +224,8 @@ class PdfProvider(BaseProvider):
                                 page_id=page_id,
                                 text_extraction_method="pdftext",
                                 url=span.get("url"),
+                                has_superscript=superscript,
+                                has_subscript=subscript
                             )
                         )
                         chars.append(span_chars)
@@ -247,8 +259,8 @@ class PdfProvider(BaseProvider):
             return False
         return True
 
-    def check_page(self, page_id: int) -> bool:
-        page = self.doc.get_page(page_id)
+    def check_page(self, page_id: int, doc: PdfDocument) -> bool:
+        page = doc.get_page(page_id)
         page_bbox = PolygonBox.from_bbox(page.get_bbox())
         try:
             page_objs = list(page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_TEXT, pdfium_c.FPDF_PAGEOBJ_IMAGE]))
@@ -275,7 +287,7 @@ class PdfProvider(BaseProvider):
 
                 # we also skip pages without embedded fonts and fonts without names
                 non_embedded_fonts.append(pdfium_c.FPDFFont_GetIsEmbedded(font) == 0)
-                empty_fonts.append(not font_name or font_name == "GlyphLessFont")
+                empty_fonts.append("glyphless" in font_name.lower()) # Add font name check back in when we bump pypdfium2
                 if font_name not in font_map:
                     font_map[font_name or 'Unknown'] = font
 
@@ -322,7 +334,8 @@ class PdfProvider(BaseProvider):
         return image
 
     def get_images(self, idxs: List[int], dpi: int) -> List[Image.Image]:
-        images = [self._render_image(self.doc, idx, dpi) for idx in idxs]
+        with self.get_doc() as doc:
+            images = [self._render_image(doc, idx, dpi) for idx in idxs]
         return images
 
     def get_page_bbox(self, idx: int) -> PolygonBox | None:
@@ -350,7 +363,7 @@ class PdfProvider(BaseProvider):
                 font_name_buffer = ctypes.create_string_buffer(length)
                 pdfium_c.FPDFFont_GetBaseFontName(font, font_name_buffer, length)
                 font_name = font_name_buffer.value.decode("utf-8")
-        except:
+        except Exception as e:
             pass
 
         return font_name

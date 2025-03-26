@@ -85,6 +85,7 @@ class Block(BaseModel):
     metadata: BlockMetadata | None = None
     lowres_image: Image.Image | None = None
     highres_image: Image.Image | None = None
+    removed: bool = False # Has block been replaced by new block?
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -214,7 +215,9 @@ class Block(BaseModel):
         blocks = []
         for block_id in self.structure:
             block = document.get_block(block_id)
-            if block_types is None or block.block_type in block_types:
+            if block.removed:
+                continue
+            if (block_types is None or block.block_type in block_types) and not block.removed:
                 blocks.append(block)
             blocks += block.contained_blocks(document, block_types)
         return blocks
@@ -263,3 +266,8 @@ class Block(BaseModel):
                 setattr(self.metadata, key, metadata_attr + value)
             else:
                 raise ValueError(f"Metadata attribute {key} is not an integer")
+
+    def handle_html_output(self, document, child_blocks, parent_structure):
+        child_ref_blocks = [block for block in child_blocks if block.id.block_type == BlockTypes.Reference]
+        html = Block.assemble_html(self, document, child_ref_blocks, parent_structure)
+        return html + self.html
