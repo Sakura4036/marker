@@ -57,3 +57,33 @@ def save_output(rendered: BaseModel, output_dir: str, fname_base: str):
 
     for img_name, img in images.items():
         img.save(os.path.join(output_dir, img_name), settings.OUTPUT_IMAGE_FORMAT)
+
+
+def get_subfolder_path(out_folder, fname):
+    subfolder_name = fname.split(".")[0]
+    subfolder_path = os.path.join(out_folder, subfolder_name)
+    os.makedirs(subfolder_path, exist_ok=True)
+    return subfolder_path
+
+
+def get_markdown_filepath(out_folder, fname):
+    subfolder_path = get_subfolder_path(out_folder, fname)
+    out_filename = fname.rsplit(".", 1)[0] + ".md"
+    out_filename = os.path.join(subfolder_path, out_filename)
+    return out_filename
+
+
+def save_markdown(out_folder, fname, full_text, images, out_metadata):
+    subfolder_path = get_subfolder_path(out_folder, fname)
+    os.makedirs(subfolder_path, exist_ok=True)
+    markdown_filepath = get_markdown_filepath(out_folder, fname)
+    out_meta_filepath = markdown_filepath.rsplit(".", 1)[0] + "_meta.json"
+
+    with open(markdown_filepath, "w+", encoding='utf-8') as f:
+        f.write(full_text)
+    with open(out_meta_filepath, "w+") as f:
+        f.write(json.dumps(out_metadata, indent=4))
+
+    for filename, image in images.items():
+        image_filepath = os.path.join(subfolder_path, filename)
+        image.save(image_filepath, "PNG")
